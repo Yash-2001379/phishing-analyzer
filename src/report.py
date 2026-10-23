@@ -208,24 +208,55 @@ def save_report(text, eml_name):
 
 # ---------- main ----------
 
+def looks_like_email(path):
+    """Check the first few lines for normal email headers, whatever the file is called."""
+    try:
+        with open(path, "rb") as f:
+            start = f.read(4096).decode("utf-8", errors="ignore").lower()
+    except OSError:
+        return False
+    return any(h in start for h in ("from:", "received:", "subject:", "return-path:"))
+
+
+def find_emails(folder):
+    """Every file in the folder that is actually an email, any name, any extension."""
+    found, skipped = [], []
+    for name in sorted(os.listdir(folder)):
+        path = os.path.join(folder, name)
+        if not os.path.isfile(path) or name.startswith("."):
+            continue
+        if name.lower().endswith(".msg"):
+            skipped.append((name, "Outlook .msg format, save it as .eml instead"))
+        elif looks_like_email(path):
+            found.append(path)
+        else:
+            skipped.append((name, "doesn't look like an email"))
+    return found, skipped
+
+
 def main():
     if len(sys.argv) != 2:
-        print("Usage: python src/report.py <email.eml or folder>")
+        print("Usage: python src/report.py <email file or folder>")
         sys.exit(1)
 
     target = sys.argv[1]
-    if os.path.isdir(target):
-        files = sorted(os.path.join(target, f) for f in os.listdir(target) if f.lower().endswith(".eml"))
-    else:
-        files = [target]
-
-    if not files:
-        print("No .eml files found")
+    if not os.path.exists(target):
+        print(f"Can't find '{target}'. Check the name, or just point it at the whole folder.")
         sys.exit(1)
 
-    results = []
+    if os.path.isdir(target):
+        files, skipped = find_emails(target)
+    else:
+        files, skipped = [target], []
+
+    results, failed = [], []
     for path in files:
-        r = score_email(path)
+        try:
+            r = score_email(path)
+        except Exception as e:
+            # One broken email shouldn't kill the whole scan
+            failed.append((os.path.basename(path), str(e)[:80]))
+            continue
         text = build_report(r)
         print(text)
         print(f"  saved to {save_report(text, r['file'])}\n")
@@ -237,6 +268,15 @@ def main():
         print(f"  {'FILE':<30} {'VERDICT':<8} SCORE")
         for r in sorted(results, key=lambda x: -x["score"]):
             print(f"  {r['file'][:30]:<30} {r['verdict']:<8} {r['score']}")
+
+    if skipped or failed:
+        print("\nSKIPPED")
+        for name, why in skipped + failed:
+            print(f"  {name[:30]:<30} {why}")
+
+    if not results:
+        print("No emails were analyzed.")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
