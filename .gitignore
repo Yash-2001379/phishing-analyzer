@@ -222,3 +222,4 @@ __marimo__/
 # Phishing analyzer
 vt_cache.json
 samples/
+reports/
