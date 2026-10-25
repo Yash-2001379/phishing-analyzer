@@ -31,6 +31,27 @@ IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".bmp")
 RISKY_EXTS = (".exe", ".scr", ".js", ".vbs", ".bat", ".cmd", ".ps1", ".iso",
               ".img", ".zip", ".rar", ".7z", ".html", ".htm", ".docm", ".xlsm")
 
+# Harmless-looking extensions used as a disguise, like invoice.pdf.exe
+DECOY_EXTS = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".txt", ".jpg", ".png")
+
+# Hidden character that flips text direction, so "invoice‮fdp.exe" displays as "invoiceexe.pdf"
+RTLO_CHAR = "‮"
+
+# Link shorteners hide where a link really goes
+URL_SHORTENERS = ("bit.ly", "is.gd", "go.ly", "tinyurl.com", "ow.ly", "cutt.ly", "rb.gy",
+                  "t.ly", "shorturl.at", "tiny.cc", "rebrand.ly", "s.id", "v.gd")
+
+# Free hosting anyone can put a fake login page on in minutes
+FREE_HOSTING = ("run.app", "web.app", "firebaseapp.com", "appspot.com", "pages.dev",
+                "workers.dev", "netlify.app", "vercel.app", "github.io", "glitch.me",
+                "weebly.com", "wixsite.com", "000webhostapp.com", "blogspot.com", "r2.dev",
+                "ngrok.io", "ngrok-free.app", "trycloudflare.com", "duckdns.org",
+                "myonlineportal.org", "kesug.com", "amazonaws.com", "storage.googleapis.com")
+
+# Cheap domain endings that show up far more in abuse reports than in normal mail
+RISKY_TLDS = (".icu", ".buzz", ".top", ".xyz", ".click", ".online", ".cfd", ".sbs", ".bond",
+              ".rest", ".bid", ".trade", ".monster", ".zip", ".mov", ".cyou", ".quest")
+
 # Words phishers love because they create panic
 URGENT_WORDS = ("urgent", "verify", "suspended", "locked", "password", "immediately",
                 "unusual activity", "unusual sign", "confirm your", "account will be",
@@ -142,6 +163,39 @@ def summarize_links(urls):
     return domains, raw_ip_urls
 
 
+def host_matches(host, suffixes):
+    """True if host is one of these domains or a subdomain of one (x.run.app matches run.app)."""
+    for s in suffixes:
+        if host == s or host.endswith("." + s):
+            return True
+    return False
+
+
+def risky_link_groups(link_domains):
+    """Sort link hosts into shorteners, free hosting, and cheap domain endings."""
+    shorteners, hosting, cheap = [], [], []
+    for host in link_domains:
+        if host_matches(host, URL_SHORTENERS):
+            shorteners.append(host)
+        elif host_matches(host, FREE_HOSTING):
+            hosting.append(host)
+        elif host.endswith(RISKY_TLDS):
+            cheap.append(host)
+    return shorteners, hosting, cheap
+
+
+def disguised_attachment(filename):
+    """Return why an attachment name is a disguise (fake extension or hidden flip character), or None."""
+    if RTLO_CHAR in filename:
+        return "uses a hidden right-to-left character to fake its extension"
+    parts = filename.lower().rstrip().split(".")
+    if len(parts) >= 3:
+        decoy, real = "." + parts[-2].strip(), "." + parts[-1]
+        if decoy in DECOY_EXTS and real in RISKY_EXTS:
+            return f"pretends to be {decoy} but is really {real}"
+    return None
+
+
 # ---------- scoring ----------
 
 def verdict_for(total):
@@ -238,6 +292,15 @@ def score_email(path):
             seen_ips.append(ip)
             findings.append((3, f"Link goes to a raw IP address ({ip})"))
 
+    # 6b. Links that hide their destination or live on throwaway hosting
+    shorteners, hosting, cheap = risky_link_groups(link_domains)
+    if shorteners:
+        findings.append((2, f"Link shortener hides the real destination ({', '.join(shorteners[:3])})"))
+    if hosting:
+        findings.append((2, f"Link on free hosting often used for fake login pages ({', '.join(hosting[:3])})"))
+    if cheap:
+        findings.append((1, f"Link uses a cheap domain ending common in scams ({', '.join(cheap[:3])})"))
+
     # 7. Pressure and bait language
     text = (h["subject"] + " " + body).lower()
     urgent = [w for w in URGENT_WORDS if w in text]
@@ -249,9 +312,13 @@ def score_email(path):
 
     # 8. Dangerous attachments
     for att in attachments:
-        fname = (att["filename"] or "").lower()
+        raw_name = att["filename"] or ""
+        fname = raw_name.lower()
         if fname.endswith(RISKY_EXTS):
-            findings.append((3, f"Risky attachment: {att['filename']}"))
+            findings.append((3, f"Risky attachment: {raw_name}"))
+        disguise = disguised_attachment(raw_name)
+        if disguise:
+            findings.append((3, f"Attachment {disguise}: {raw_name}"))
 
     total = sum(p for p, _ in findings)
     verdict = verdict_for(total)
