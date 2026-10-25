@@ -169,6 +169,8 @@ def score_email(path):
     # 1. Sender address itself. Missing or fake-looking = big red flag.
     if not h["from_addr"]:
         findings.append((3, "No sender address at all"))
+    elif not from_domain:
+        findings.append((2, "Sender address has no domain (no @ part)"))
     elif "." not in from_domain:
         findings.append((2, f"Sender domain '{from_domain}' isn't a real domain"))
     if from_root in FREE_TENANT_DOMAINS:
@@ -228,9 +230,13 @@ def score_email(path):
     if fake_of:
         findings.append((3, f"Domain {from_root} is a lookalike of {fake_of.title()}, not their real site"))
 
-    # 6. Links pointing at raw IP addresses
+    # 6. Links pointing at raw IP addresses. Count each IP once, even if many links use it.
+    seen_ips = []
     for url in raw_ips:
-        findings.append((3, f"Link goes to a raw IP address ({urlparse(url).hostname})"))
+        ip = urlparse(url).hostname
+        if ip not in seen_ips:
+            seen_ips.append(ip)
+            findings.append((3, f"Link goes to a raw IP address ({ip})"))
 
     # 7. Pressure and bait language
     text = (h["subject"] + " " + body).lower()
@@ -360,6 +366,11 @@ def clean(text, limit=None):
     return text
 
 
+def label(name):
+    """Grey field label padded to a fixed width. Pad first, then color, or the color codes break the spacing."""
+    return c(f"{name:<12}", GREY)
+
+
 def auth_badge(name, status):
     if status == "pass":
         return c(f"✓ {name}", GREEN)
@@ -384,14 +395,14 @@ def print_card(r):
 
     print("  " + c(clean(h["subject"], 70) or "(no subject)", BOLD))
     sender = clean(h["from_addr"]) or c("(no address)", RED)
-    print(f"  {c('From', GREY):<18}{clean(h['from_name'], 30)} <{sender}>")
+    print(f"  {label('From')}{clean(h['from_name'], 30)} <{sender}>")
     if h["reply_to"]:
-        print(f"  {c('Reply-To', GREY):<18}{clean(h['reply_to'])}")
+        print(f"  {label('Reply-To')}{clean(h['reply_to'])}")
     badges = "   ".join(auth_badge(k.upper(), r["auth"][k]) for k in ("spf", "dkim", "dmarc"))
-    print(f"  {c('Auth', GREY):<18}{badges}")
+    print(f"  {label('Auth')}{badges}")
     if "vt" in r:
         vt_color = RED if r["vt"]["flagged"] else GREY
-        print(f"  {c('VirusTotal', GREY):<18}{c(vt_summary(r['vt']), vt_color)}")
+        print(f"  {label('VirusTotal')}{c(vt_summary(r['vt']), vt_color)}")
 
     print()
     if r["findings"]:
@@ -405,9 +416,9 @@ def print_card(r):
         links = ", ".join(clean(d) for d, _ in top_links)
         more = len(r["link_domains"]) - len(top_links)
         extra = f" +{more} more" if more > 0 else ""
-        print(f"\n  {c('Links', GREY):<18}{links}{extra}")
+        print(f"\n  {label('Links')}{links}{extra}")
     for a in r["attachments"]:
-        print(f"  {c('Attachment', GREY):<18}{clean(a['filename'])}  {c(a['sha256'][:16] + '…', GREY)}")
+        print(f"  {label('Attachment')}{clean(a['filename'])}  {c(a['sha256'][:16] + '…', GREY)}")
     print()
 
 
