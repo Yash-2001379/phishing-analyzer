@@ -304,6 +304,8 @@ def score_email(path):
     fake_of = lookalike_brand(from_root)
     if fake_of:
         findings.append((3, f"Domain {from_root} is a lookalike of {fake_of.title()}, not their real site", "T1583.001"))
+    # A domain the scammer registered themselves is safe to block outright
+    scam_domain = bool(fake_of) or from_root.endswith(RISKY_TLDS)
 
     # 6. Links pointing at raw IP addresses. Count each IP once, even if many links use it.
     seen_ips = []
@@ -356,7 +358,50 @@ def score_email(path):
         "findings": findings,
         "score": total,
         "verdict": verdict,
+        "authenticated": authenticated,
+        "scam_domain": scam_domain,
     }
+
+
+# ---------- recommended actions ----------
+# What a SOC analyst would do next. Detection is only half the job.
+
+def recommended_actions(r):
+    """Short next-step playbook for a MEDIUM or HIGH email."""
+    if r["verdict"] == "LOW":
+        return []
+    if r["verdict"] == "MEDIUM":
+        return ["Hold it for analyst review before it reaches the user",
+                "Don't click links or open attachments until it's been checked"]
+
+    h = r["headers"]
+    addr = h["from_addr"]
+    root = r["from_root"]
+    actions = []
+
+    # Blocking the wrong thing can cut off a real company, so pick carefully
+    if not addr or "." not in root:
+        actions.append("Sender address is fake, so block by subject and links instead of sender")
+    elif r["scam_domain"]:
+        actions.append(f"Block the sender domain {root} at the email gateway")
+    elif root in FREE_WEBMAIL:
+        actions.append(f"Block the sender address {addr} (not all of {root})")
+    elif r["authenticated"]:
+        actions.append(f"Block the sender address {addr}. It passed authentication, "
+                       f"so the real {root} account may be hacked, warn its owner")
+    else:
+        actions.append(f"Don't block {root}, the sender was likely faked. Block the links instead")
+
+    if r["link_domains"]:
+        actions.append("Block the link domains from the IOC file at the web proxy or DNS filter")
+    actions.append("Search all mailboxes for the same sender and subject, and remove every copy")
+    if r["link_domains"]:
+        actions.append("If anyone clicked: reset their password, sign them out everywhere, check sign-in logs")
+    if r["attachments"]:
+        actions.append("If anyone opened the attachment: isolate their computer and run a malware scan")
+    if h["reply_to"] and root_domain(domain_of(h["reply_to"])) in FREE_WEBMAIL:
+        actions.append("If anyone replied: check what they sent, replies go to a scammer's inbox")
+    return actions
 
 
 # ---------- VirusTotal (optional, --vt) ----------
@@ -510,6 +555,12 @@ def print_card(r):
     else:
         print("   " + c("✓ Nothing suspicious found", GREEN))
 
+    actions = recommended_actions(r)
+    if actions:
+        print("\n  " + c("Next steps", BOLD))
+        for a in actions:
+            print(f"   → {clean(a)}")
+
     if r["link_domains"]:
         top_links = sorted(r["link_domains"].items(), key=lambda x: -x[1])[:5]
         links = ", ".join(clean(d) for d, _ in top_links)
@@ -584,6 +635,10 @@ def build_markdown(results, skipped):
             out += [f"- `{t}` {ATTACK_NAMES.get(t, '')}" for t in techniques(r)]
         else:
             out.append("- ✅ Nothing suspicious found")
+        actions = recommended_actions(r)
+        if actions:
+            out += ["", "**Recommended actions**", ""]
+            out += [f"{i}. {md(a)}" for i, a in enumerate(actions, 1)]
         if r["link_domains"]:
             doms = sorted(r["link_domains"].items(), key=lambda x: -x[1])
             out += ["", f"**Link destinations** ({r['total_urls']} links total)", ""]
