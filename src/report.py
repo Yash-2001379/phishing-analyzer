@@ -101,6 +101,24 @@ VT_MAX_LINK_DOMAINS = 3
 # Common helper sites in HTML emails, not worth a lookup
 VT_SKIP_DOMAINS = {"fonts.googleapis.com", "fonts.gstatic.com"}
 
+# MITRE ATT&CK techniques our rules map to. attack.mitre.org is the common language
+# SOC teams use to describe what an attacker did.
+ATTACK_NAMES = {
+    "T1566": "Phishing",
+    "T1566.001": "Phishing: Spearphishing Attachment",
+    "T1566.002": "Phishing: Spearphishing Link",
+    "T1672": "Email Spoofing",
+    "T1656": "Impersonation",
+    "T1583.001": "Acquire Infrastructure: Domains",
+    "T1583.006": "Acquire Infrastructure: Web Services",
+    "T1585.002": "Establish Accounts: Email Accounts",
+    "T1036.002": "Masquerading: Right-to-Left Override",
+    "T1036.007": "Masquerading: Double File Extension",
+}
+# Which technique a VirusTotal hit points to, based on what was flagged
+VT_LABEL_TAGS = {"sender domain": "T1566", "reply-to domain": "T1566",
+                 "link domain": "T1566.002", "attachment": "T1566.001"}
+
 # Country endings that use two parts, like bbc.co.uk
 TWO_PART_TLDS = ("co.uk", "com.au", "co.in", "co.jp", "com.br", "co.nz", "ac.uk", "gov.uk")
 
@@ -180,19 +198,22 @@ def risky_link_groups(link_domains):
         elif host_matches(host, FREE_HOSTING):
             hosting.append(host)
         elif host.endswith(RISKY_TLDS):
-            cheap.append(host)
+            # Scammers spin up endless random subdomains, so list each site once
+            site = root_domain(host)
+            if site not in cheap:
+                cheap.append(site)
     return shorteners, hosting, cheap
 
 
 def disguised_attachment(filename):
-    """Return why an attachment name is a disguise (fake extension or hidden flip character), or None."""
+    """Return (why, ATT&CK tag) if an attachment name is a disguise, or None."""
     if RTLO_CHAR in filename:
-        return "uses a hidden right-to-left character to fake its extension"
+        return "uses a hidden right-to-left character to fake its extension", "T1036.002"
     parts = filename.lower().rstrip().split(".")
     if len(parts) >= 3:
         decoy, real = "." + parts[-2].strip(), "." + parts[-1]
         if decoy in DECOY_EXTS and real in RISKY_EXTS:
-            return f"pretends to be {decoy} but is really {real}"
+            return f"pretends to be {decoy} but is really {real}", "T1036.007"
     return None
 
 
@@ -218,30 +239,30 @@ def score_email(path):
     from_domain = domain_of(h["from_addr"])
     from_root = root_domain(from_domain) if from_domain else ""
     sender_label = from_root or "an empty sender"
-    findings = []   # (points, reason)
+    findings = []   # (points, reason, MITRE ATT&CK technique ID)
 
     # 1. Sender address itself. Missing or fake-looking = big red flag.
     if not h["from_addr"]:
-        findings.append((3, "No sender address at all"))
+        findings.append((3, "No sender address at all", "T1672"))
     elif not from_domain:
-        findings.append((2, "Sender address has no domain (no @ part)"))
+        findings.append((2, "Sender address has no domain (no @ part)", "T1672"))
     elif "." not in from_domain:
-        findings.append((2, f"Sender domain '{from_domain}' isn't a real domain"))
+        findings.append((2, f"Sender domain '{from_domain}' isn't a real domain", "T1672"))
     if from_root in FREE_TENANT_DOMAINS:
-        findings.append((2, f"Sent from a free {from_root} trial domain, often abused by scammers"))
+        findings.append((2, f"Sent from a free {from_root} trial domain, often abused by scammers", "T1585.002"))
 
     # 2. Authentication. Real companies almost always pass these.
     if auth["spf"] in ("fail", "softfail"):
-        findings.append((2, f"SPF {auth['spf']}, the sending server isn't allowed to send for this domain"))
+        findings.append((2, f"SPF {auth['spf']}, the sending server isn't allowed to send for this domain", "T1672"))
     if auth["dkim"] == "fail":
-        findings.append((2, "DKIM failed, the email may have been altered or forged"))
+        findings.append((2, "DKIM failed, the email may have been altered or forged", "T1672"))
     if auth["dmarc"] == "fail":
-        findings.append((3, "DMARC failed, the domain owner says this email isn't theirs"))
+        findings.append((3, "DMARC failed, the domain owner says this email isn't theirs", "T1672"))
     dmarc_ok = auth["dmarc"] == "pass"
     # Passed checks prove the sending server and signature are real for this email
     authenticated = dmarc_ok or (auth["spf"] == "pass" and auth["dkim"] == "pass")
     if auth["dkim"] in ("none", "missing") and not dmarc_ok:
-        findings.append((2, "No DKIM signature and no DMARC pass, nothing proves who sent this"))
+        findings.append((2, "No DKIM signature and no DMARC pass, nothing proves who sent this", "T1672"))
 
     # 3. Reply-To going somewhere else is a classic trick.
     #    Free inboxes always count fully. A different company domain counts less
@@ -251,18 +272,18 @@ def score_email(path):
         reply_root = root_domain(domain_of(h["reply_to"]))
         if reply_root != from_root:
             if reply_root in FREE_WEBMAIL:
-                findings.append((3, f"Replies go to a free {reply_root} inbox, not {sender_label}"))
+                findings.append((3, f"Replies go to a free {reply_root} inbox, not {sender_label}", "T1672"))
             elif authenticated:
-                findings.append((1, f"Replies go to {reply_root}, not {sender_label} (email is authenticated)"))
+                findings.append((1, f"Replies go to {reply_root}, not {sender_label} (email is authenticated)", "T1672"))
             else:
-                findings.append((3, f"Replies go to {reply_root}, not {sender_label}"))
+                findings.append((3, f"Replies go to {reply_root}, not {sender_label}", "T1672"))
 
     # 4. Return-Path mismatch. Only counts if DMARC didn't pass,
     #    because newsletters use services like SendGrid all the time.
     if h["return_path"] and not dmarc_ok:
         rp_root = root_domain(domain_of(h["return_path"]))
         if rp_root != from_root:
-            findings.append((1, f"Bounce address is {rp_root}, not {sender_label}"))
+            findings.append((1, f"Bounce address is {rp_root}, not {sender_label}", "T1672"))
 
     # 5. Pretending to be a brand it isn't.
     #    Sender name: always counts. Subject: only counts if the email isn't authenticated,
@@ -273,16 +294,16 @@ def score_email(path):
         if from_root in real_domains:
             continue
         if brand in name:
-            findings.append((3, f"Name says '{h['from_name']}' but it's sent from {sender_label}"))
+            findings.append((3, f"Name says '{h['from_name']}' but it's sent from {sender_label}", "T1656"))
             break
         if brand in subject and not dmarc_ok:
-            findings.append((2, f"Subject mentions {brand.title()} but it's sent from {sender_label}"))
+            findings.append((2, f"Subject mentions {brand.title()} but it's sent from {sender_label}", "T1656"))
             break
 
     # 5b. Domain built to look like a brand (paypa1.com, paypal-help.com)
     fake_of = lookalike_brand(from_root)
     if fake_of:
-        findings.append((3, f"Domain {from_root} is a lookalike of {fake_of.title()}, not their real site"))
+        findings.append((3, f"Domain {from_root} is a lookalike of {fake_of.title()}, not their real site", "T1583.001"))
 
     # 6. Links pointing at raw IP addresses. Count each IP once, even if many links use it.
     seen_ips = []
@@ -290,37 +311,38 @@ def score_email(path):
         ip = urlparse(url).hostname
         if ip not in seen_ips:
             seen_ips.append(ip)
-            findings.append((3, f"Link goes to a raw IP address ({ip})"))
+            findings.append((3, f"Link goes to a raw IP address ({ip})", "T1566.002"))
 
     # 6b. Links that hide their destination or live on throwaway hosting
     shorteners, hosting, cheap = risky_link_groups(link_domains)
     if shorteners:
-        findings.append((2, f"Link shortener hides the real destination ({', '.join(shorteners[:3])})"))
+        findings.append((2, f"Link shortener hides the real destination ({', '.join(shorteners[:3])})", "T1566.002"))
     if hosting:
-        findings.append((2, f"Link on free hosting often used for fake login pages ({', '.join(hosting[:3])})"))
+        findings.append((2, f"Link on free hosting often used for fake login pages ({', '.join(hosting[:3])})", "T1583.006"))
     if cheap:
-        findings.append((1, f"Link uses a cheap domain ending common in scams ({', '.join(cheap[:3])})"))
+        findings.append((1, f"Link uses a cheap domain ending common in scams ({', '.join(cheap[:3])})", "T1583.001"))
 
     # 7. Pressure and bait language
     text = (h["subject"] + " " + body).lower()
     urgent = [w for w in URGENT_WORDS if w in text]
     if urgent:
-        findings.append((1, f"Pressure words used: {', '.join(urgent[:4])}"))
+        findings.append((1, f"Pressure words used: {', '.join(urgent[:4])}", "T1566"))
     lure = [w for w in LURE_WORDS if w in text]
     if lure:
-        findings.append((1, f"Bait words used: {', '.join(lure[:4])}"))
+        findings.append((1, f"Bait words used: {', '.join(lure[:4])}", "T1566"))
 
     # 8. Dangerous attachments
     for att in attachments:
         raw_name = att["filename"] or ""
         fname = raw_name.lower()
         if fname.endswith(RISKY_EXTS):
-            findings.append((3, f"Risky attachment: {raw_name}"))
+            findings.append((3, f"Risky attachment: {raw_name}", "T1566.001"))
         disguise = disguised_attachment(raw_name)
         if disguise:
-            findings.append((3, f"Attachment {disguise}: {raw_name}"))
+            why, tag = disguise
+            findings.append((3, f"Attachment {why}: {raw_name}", tag))
 
-    total = sum(p for p, _ in findings)
+    total = sum(f[0] for f in findings)
     verdict = verdict_for(total)
 
     return {
@@ -350,7 +372,7 @@ def vt_targets(r):
             targets.append((label, value, endpoint))
 
     sender = domain_of(r["headers"]["from_addr"])
-    add("sender domain", sender, vt_client.domain_endpoint(sender))
+    add("sender domain", sender, vt_client.domain_endpoint(sender))  # labels must match VT_LABEL_TAGS
     reply = domain_of(r["headers"]["reply_to"])
     add("reply-to domain", reply, vt_client.domain_endpoint(reply))
 
@@ -394,10 +416,20 @@ def add_vt_findings(r, cache, api_key):
         r["vt"]["checked"] += 1
         if res["malicious"] >= VT_MIN_VENDORS:
             r["vt"]["flagged"] += 1
-            r["findings"].append((3, f"VirusTotal: {res['malicious']} vendors flag {label} {value} as malicious"))
+            r["findings"].append((3, f"VirusTotal: {res['malicious']} vendors flag {label} {value} as malicious",
+                                  VT_LABEL_TAGS[label]))
 
-    r["score"] = sum(p for p, _ in r["findings"])
+    r["score"] = sum(f[0] for f in r["findings"])
     r["verdict"] = verdict_for(r["score"])
+
+
+def techniques(r):
+    """Unique ATT&CK technique IDs found in one email, in a stable order."""
+    found = []
+    for _, _, tag in r["findings"]:
+        if tag not in found:
+            found.append(tag)
+    return sorted(found)
 
 
 def vt_summary(vt):
@@ -473,8 +505,8 @@ def print_card(r):
 
     print()
     if r["findings"]:
-        for points, reason in sorted(r["findings"], reverse=True):
-            print(f"   {c('+' + str(points), RED + ';' + BOLD)}  {clean(reason)}")
+        for points, reason, tag in sorted(r["findings"], reverse=True):
+            print(f"   {c('+' + str(points), RED + ';' + BOLD)}  {clean(reason)}  {c(tag, GREY)}")
     else:
         print("   " + c("✓ Nothing suspicious found", GREEN))
 
@@ -547,7 +579,9 @@ def build_markdown(results, skipped):
             out.append(f"| VirusTotal | {vt_summary(r['vt'])} |")
         out += ["", "**Why**", ""]
         if r["findings"]:
-            out += [f"- **+{p}** {md(reason)}" for p, reason in sorted(r["findings"], reverse=True)]
+            out += [f"- **+{p}** {md(reason)} `{tag}`" for p, reason, tag in sorted(r["findings"], reverse=True)]
+            out += ["", "**MITRE ATT&CK**", ""]
+            out += [f"- `{t}` {ATTACK_NAMES.get(t, '')}" for t in techniques(r)]
         else:
             out.append("- ✅ Nothing suspicious found")
         if r["link_domains"]:
