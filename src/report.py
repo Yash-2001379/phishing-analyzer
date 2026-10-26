@@ -97,6 +97,9 @@ LOOKALIKE_MIN_LEN = 5
 # VirusTotal (only used with --vt).
 # One vendor flagging something is often a false alarm, so we need at least this many.
 VT_MIN_VENDORS = 2
+# A hit from fewer vendors than this on a DMARC-pass email is weak evidence
+# (hoyo.link, a game company's own link shortener, gets 2 flags), so it counts less
+VT_STRONG_VENDORS = 5
 # Only check the busiest few link domains per email, to save the 500/day quota
 VT_MAX_LINK_DOMAINS = 3
 # Common helper sites in HTML emails, not worth a lookup
@@ -463,8 +466,11 @@ def add_vt_findings(r, cache, api_key):
         r.setdefault("vt_malicious", {})[endpoint] = res["malicious"]   # used by the IOC file
         if res["malicious"] >= VT_MIN_VENDORS:
             r["vt"]["flagged"] += 1
-            r["findings"].append((3, f"VirusTotal: {res['malicious']} vendors flag {label} {value} as malicious",
-                                  VT_LABEL_TAGS[label]))
+            reason = f"VirusTotal: {res['malicious']} vendors flag {label} {value} as malicious"
+            if r["auth"]["dmarc"] == "pass" and res["malicious"] < VT_STRONG_VENDORS:
+                r["findings"].append((1, reason + " (few vendors, email passes DMARC)", VT_LABEL_TAGS[label]))
+            else:
+                r["findings"].append((3, reason, VT_LABEL_TAGS[label]))
 
     r["score"] = sum(f[0] for f in r["findings"])
     r["verdict"] = verdict_for(r["score"])
