@@ -752,18 +752,20 @@ def looks_like_email(path):
 
 
 def find_emails(folder):
-    """Every file in the folder that is actually an email, any name, any extension."""
+    """Every file in the folder (and its subfolders) that is actually an email, any name, any extension."""
     found, skipped = [], []
-    for name in sorted(os.listdir(folder)):
-        path = os.path.join(folder, name)
-        if not os.path.isfile(path) or name.startswith("."):
-            continue
-        if name.lower().endswith(".msg"):
-            skipped.append((name, "Outlook .msg format, save it as .eml instead"))
-        elif looks_like_email(path):
-            found.append(path)
-        else:
-            skipped.append((name, "doesn't look like an email"))
+    for root, dirs, names in os.walk(folder):
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        for name in sorted(names):
+            path = os.path.join(root, name)
+            if name.startswith("."):
+                continue
+            if name.lower().endswith(".msg"):
+                skipped.append((name, "Outlook .msg format, save it as .eml instead"))
+            elif looks_like_email(path):
+                found.append(path)
+            else:
+                skipped.append((name, "doesn't look like an email"))
     return found, skipped
 
 
