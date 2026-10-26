@@ -12,6 +12,7 @@ Uses only Python's standard library, nothing to install.
 import os
 import re
 import sys
+import csv
 import html
 from datetime import datetime
 from urllib.parse import urlparse
@@ -459,6 +460,7 @@ def add_vt_findings(r, cache, api_key):
             r["vt"]["unknown"] += 1
             continue
         r["vt"]["checked"] += 1
+        r.setdefault("vt_malicious", {})[endpoint] = res["malicious"]   # used by the IOC file
         if res["malicious"] >= VT_MIN_VENDORS:
             r["vt"]["flagged"] += 1
             r["findings"].append((3, f"VirusTotal: {res['malicious']} vendors flag {label} {value} as malicious",
@@ -572,7 +574,7 @@ def print_card(r):
     print()
 
 
-def print_summary(results, skipped, md_path):
+def print_summary(results, skipped, md_path, ioc_path=None, ioc_count=0):
     counts = {v: sum(1 for r in results if r["verdict"] == v) for v in ("HIGH", "MEDIUM", "LOW")}
     print(c("SUMMARY", BOLD) + c(f"   {len(results)} emails scanned", GREY))
     print("  " + "   ".join(c(f"{counts[v]} {v.lower()}", VERDICT_COLOR[v] + ";" + BOLD) for v in counts))
@@ -585,6 +587,8 @@ def print_summary(results, skipped, md_path):
         for n, why in skipped:
             print(f"  {clean(n, 30):<30} {c(why, GREY)}")
     print("\n" + c(f"Saved report: {md_path}", GREY))
+    if ioc_path:
+        print(c(f"Saved IOCs:   {ioc_path}  ({ioc_count} indicators, defanged)", GREY))
     print(c("Open it in VS Code and press Ctrl+Shift+V for the formatted view", GREY))
 
 
@@ -653,12 +657,79 @@ def build_markdown(results, skipped):
     return "\n".join(out) + "\n"
 
 
-def save_markdown(text):
+def save_markdown(text, stamp):
+    """Write the markdown report to reports/report_<stamp>.md."""
     os.makedirs("reports", exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     out = os.path.join("reports", f"report_{stamp}.md")
     with open(out, "w", encoding="utf-8") as f:
         f.write(text)
+    return out
+
+
+# ---------- IOC export ----------
+# IOC = Indicator of Compromise: the addresses, domains, IPs and file hashes
+# another team can block. Saved as CSV because every SIEM and firewall can import it.
+
+def defang(value):
+    """evil.com -> evil[.]com and a@b.com -> a[@]b[.]com, so nothing is clickable."""
+    return value.replace(".", "[.]").replace("@", "[@]")
+
+
+def csv_safe(value):
+    """Stop Excel from running attacker text as a formula (CSV injection)."""
+    value = clean(value)
+    if value.startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
+def collect_iocs(results):
+    """Indicators from every MEDIUM or HIGH email, one row each."""
+    rows = []
+    for r in results:
+        if r["verdict"] == "LOW":
+            continue
+        vt = r.get("vt_malicious", {})
+        seen = set()
+
+        def add(kind, value, endpoint=None, note=""):
+            if not value or (kind, value) in seen:
+                return
+            seen.add((kind, value))
+            hits = vt.get(endpoint, "") if endpoint else ""
+            shown = value if kind == "sha256" else defang(value)
+            rows.append([kind, csv_safe(shown), csv_safe(r["file"]), r["verdict"], hits, csv_safe(note)])
+
+        h = r["headers"]
+        if "@" in h["from_addr"]:
+            add("sender_address", h["from_addr"])
+        # Only list the sender domain when the scammer owns it. A faked real
+        # domain (like telekom.com) is not something to block.
+        sender_domain = domain_of(h["from_addr"])
+        if r["scam_domain"]:
+            add("sender_domain", sender_domain, vt_client.domain_endpoint(sender_domain))
+        if "@" in h["reply_to"] and root_domain(domain_of(h["reply_to"])) != r["from_root"]:
+            add("reply_to_address", h["reply_to"])
+        for host in r["link_domains"]:
+            if host in VT_SKIP_DOMAINS:
+                continue
+            kind = "ip" if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host) else "link_domain"
+            add(kind, host, vt_client.domain_endpoint(host))
+        for a in r["attachments"]:
+            add("sha256", a["sha256"], vt_client.file_endpoint(a["sha256"]), note=a["filename"] or "")
+    return rows
+
+
+def save_iocs(rows, stamp):
+    """Write IOC rows to reports/iocs_<stamp>.csv, or skip if there are none."""
+    if not rows:
+        return None
+    os.makedirs("reports", exist_ok=True)
+    out = os.path.join("reports", f"iocs_{stamp}.csv")
+    with open(out, "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["type", "value_defanged", "source_email", "verdict", "vt_malicious_vendors", "note"])
+        w.writerows(rows)
     return out
 
 
@@ -745,8 +816,11 @@ def main():
     print()
     for r in sorted(results, key=lambda x: -x["score"]):
         print_card(r)
-    md_path = save_markdown(build_markdown(results, skipped))
-    print_summary(results, skipped, md_path)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    md_path = save_markdown(build_markdown(results, skipped), stamp)
+    iocs = collect_iocs(results)
+    ioc_path = save_iocs(iocs, stamp)
+    print_summary(results, skipped, md_path, ioc_path, len(iocs))
 
 
 if __name__ == "__main__":
