@@ -6,6 +6,8 @@ Usage:
     python src/report.py samples                     (every .eml in the folder)
     python src/report.py samples --vt                (also check VirusTotal)
 
+If the folder has phishing/ and legit/ inside, the scan also prints detection results.
+
 Prints a colored report in the terminal and saves a Markdown copy in reports/.
 Uses only Python's standard library, nothing to install.
 """
@@ -353,6 +355,7 @@ def score_email(path):
 
     return {
         "file": os.path.basename(path),
+        "path": path,
         "headers": h,
         "auth": auth,
         "from_root": from_root,
@@ -829,6 +832,21 @@ def main():
     iocs = collect_iocs(results)
     ioc_path = save_iocs(iocs, stamp)
     print_summary(results, skipped, md_path, ioc_path, len(iocs))
+
+    # If the folder is split into phishing/ and legit/, we know the right answers,
+    # so also show how well the scan did. One command does everything.
+    phish_dir = os.path.join(target, "phishing")
+    legit_dir = os.path.join(target, "legit")
+    if os.path.isdir(phish_dir) and os.path.isdir(legit_dir):
+        import measure  # imported here because measure.py imports this file
+        phish = [r for r in results if in_folder(r["path"], phish_dir)]
+        legit = [r for r in results if in_folder(r["path"], legit_dir)]
+        measure.print_results(phish, legit, use_vt)
+
+
+def in_folder(path, folder):
+    """True if path is somewhere inside folder."""
+    return os.path.commonpath([os.path.abspath(path), os.path.abspath(folder)]) == os.path.abspath(folder)
 
 
 if __name__ == "__main__":

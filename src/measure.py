@@ -77,6 +77,15 @@ def main():
         print(f"VirusTotal stopped: {e}. Run again without --vt, or try later.")
         sys.exit(1)
 
+    print_results(phish, legit, use_vt)
+    if phish_dupes or legit_dupes:
+        print(f"\nSkipped duplicates: {phish_dupes} phishing, {legit_dupes} legit")
+    for name, why in phish_failed + legit_failed:
+        print(f"Couldn't read {report.clean(name, 40)}: {why}")
+
+
+def print_results(phish, legit, use_vt):
+    """Print detection rate, false positive rate, precision, misses and false alarms."""
     # The four boxes of a confusion matrix, in plain words
     caught = [r for r in phish if r["verdict"] != "LOW"]      # true positives
     missed = [r for r in phish if r["verdict"] == "LOW"]      # false negatives
@@ -107,10 +116,6 @@ def main():
         print("\nFALSE ALARMS (legit flagged)")
         for r in sorted(false_alarms, key=lambda x: -x["score"]):
             print(f"  {r['verdict']:<6} {r['score']:>2}  {report.clean(r['headers']['subject'], 55) or '(no subject)'}")
-    if phish_dupes or legit_dupes:
-        print(f"\nSkipped duplicates: {phish_dupes} phishing, {legit_dupes} legit")
-    for name, why in phish_failed + legit_failed:
-        print(f"Couldn't read {report.clean(name, 40)}: {why}")
 
 
 if __name__ == "__main__":
