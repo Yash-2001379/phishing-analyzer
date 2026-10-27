@@ -1,0 +1,5 @@
+From: Netflix Billing <billing@random-shop.example>
+Subject: Your PayPal payment
+Authentication-Results: mx.example; spf=pass; dkim=none; dmarc=none
+
+Hello.

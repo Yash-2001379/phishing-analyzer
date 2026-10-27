@@ -299,17 +299,25 @@ def score_email(path):
     # 5. Pretending to be a brand it isn't.
     #    Sender name: always counts. Subject: only counts if the email isn't authenticated,
     #    because real newsletters mention other brands all the time.
+    #    Check every brand against the name first, so a subject match on an earlier
+    #    brand can't hide a faked sender name for a later one. One brand finding max.
     name = h["from_name"].lower()
     subject = h["subject"].lower()
+    name_faked = False
     for brand, real_domains in BRANDS.items():
         if from_root in real_domains:
             continue
         if brand in name:
             findings.append((3, f"Name says '{h['from_name']}' but it's sent from {sender_label}", "T1656"))
+            name_faked = True
             break
-        if brand in subject and not dmarc_ok:
-            findings.append((2, f"Subject mentions {brand.title()} but it's sent from {sender_label}", "T1656"))
-            break
+    if not name_faked and not dmarc_ok:
+        for brand, real_domains in BRANDS.items():
+            if from_root in real_domains:
+                continue
+            if brand in subject:
+                findings.append((2, f"Subject mentions {brand.title()} but it's sent from {sender_label}", "T1656"))
+                break
 
     # 5b. Domain built to look like a brand (paypa1.com, paypal-help.com)
     fake_of = lookalike_brand(from_root)

@@ -135,13 +135,17 @@ phishing-analyzer/
 │   ├── report.py      scoring, terminal report, markdown report, IOC CSV (main entry point)
 │   ├── vt_client.py   VirusTotal lookups, standard library only, connected via --vt
 │   └── measure.py     detection rate and false positive rate on labeled folders
+├── tests/
+│   ├── test_brand_check.py   unittest tests for rule 5 (standard library only)
+│   └── emails/               made-up .eml files used by the tests (never real samples)
 ├── samples/           test emails (gitignored)
 │   ├── phishing/      known phishing
 │   └── legit/         known legit
 └── reports/           generated report_<timestamp>.md and iocs_<timestamp>.csv (gitignored)
 ```
 
-There is no `tests/` folder yet.
+Run the tests with `python -m unittest discover tests -v`. Test emails use the reserved
+`.example` domain ending so they can never point at a real site.
 
 ### .gitignore must end with
 
@@ -267,7 +271,8 @@ None of the parser functions have docstrings yet.
 | VT | Same, but email passes DMARC and fewer than 5 vendors flag it | +1 each | from `VT_LABEL_TAGS` |
 
 Notes on the rules:
-- Rule 5 stops at the first brand that matches either check (one brand finding per email).
+- Rule 5 checks the sender name against every brand first. Only if no name matches does
+  it check the subject. One brand finding per email at most.
 - A file like `invoice.pdf.exe` gets both rule 8 findings (+6).
 - `scam_domain` is True when the sender domain is a lookalike or uses a risky TLD. It
   decides whether the sender domain is safe to block and goes into the IOC file.
@@ -417,14 +422,12 @@ History worth keeping for the README:
    elsewhere). Good future rule.
 4. **Lookalike check only looks at the sender domain**, not link domains or Reply-To. It
    also misses brands under 5 letters and swaps not in `LOOKALIKE_SWAPS`.
-5. **Rule 5 stops at the first brand match.** If the subject mentions one brand, a fake
-   sender name for a later brand in `BRANDS` isn't checked.
-6. **`root_domain` is simple.** It doesn't know every two-part ending. Fine for now,
+5. **`root_domain` is simple.** It doesn't know every two-part ending. Fine for now,
    mention it as a limitation.
-7. **No tests.** A small `tests/` folder with fake made-up emails would help, and is good
-   for interviews. Never use real samples in tests.
-8. **Missing docstrings** in parser.py and some report.py functions (listed in section 6).
-9. **README is a placeholder.**
+6. **Few tests.** `tests/` only covers rule 5 so far. Add made-up emails for the other
+   rules. Never use real samples in tests.
+7. **Missing docstrings** in parser.py and some report.py functions (listed in section 6).
+8. **README is a placeholder.**
 
 ---
 
@@ -441,12 +444,13 @@ History worth keeping for the README:
 - `measure.py` with detection rate, false positive rate, precision, duplicate skipping
 - Measured on 55 phishing + 22 legit (section 8)
 - Claude attribution removed from history and turned off for future commits
+- Rule 5 fixed so a subject brand can't hide a faked sender name, with tests
 
 **Not done**
 - 50 legit emails (have 22)
 - Non-English or language-neutral detection
 - Link text vs destination rule
-- `tests/` folder
+- Tests for rules other than rule 5
 - README with screenshot, scoring explanation, results, limitations
 - ML classifier
 
@@ -467,7 +471,7 @@ Work in this order unless the owner says otherwise.
 2. **Look at the 13 rules-only misses.** Find a language-neutral signal before adding
    word lists in other languages. Don't overfit to these exact samples.
 3. **Link text vs destination rule** (gap 3).
-4. **`tests/` folder** with made-up emails for each rule.
+4. **More tests** in `tests/` with made-up emails for each remaining rule.
 5. **README.** What it does, why zero dependencies, screenshot of terminal output, how
    scoring works, measured results, limitations. Written in a human tone, not AI-sounding.
 6. **ML classifier.** Train on Nazario phishing corpus vs Enron legit emails using
