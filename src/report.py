@@ -84,6 +84,11 @@ BRANDS = {
     "cibc": ["cibc.com"],
     "bmo": ["bmo.com"],
     "interac": ["interac.ca"],
+    # Crypto wallets: a top phishing target because stolen crypto can't be reversed
+    "trust wallet": ["trustwallet.com"],
+    "ledger": ["ledger.com"],
+    "metamask": ["metamask.io"],
+    "coinbase": ["coinbase.com"],
 }
 
 # Free domains anyone can sign up for. Real companies don't send from these.
@@ -373,6 +378,15 @@ def score_email(path):
 # ---------- recommended actions ----------
 # What a SOC analyst would do next. Detection is only half the job.
 
+def spoofed(auth):
+    """True if a check actually failed, meaning the real domain owner's rules caught a fake.
+    'none' or 'missing' is different: nobody set up checks, so we can't tell."""
+    for check in ("spf", "dkim", "dmarc"):
+        if auth[check] in ("fail", "softfail"):
+            return True
+    return False
+
+
 def recommended_actions(r):
     """Short next-step playbook for a MEDIUM or HIGH email."""
     if r["verdict"] == "LOW":
@@ -396,8 +410,12 @@ def recommended_actions(r):
     elif r["authenticated"]:
         actions.append(f"Block the sender address {addr}. It passed authentication, "
                        f"so the real {root} account may be hacked, warn its owner")
-    else:
+    elif spoofed(r["auth"]):
         actions.append(f"Don't block {root}, the sender was likely faked. Block the links instead")
+    else:
+        # No checks set up at all: could be the scammer's own domain, or a faked one
+        actions.append(f"Block the sender address {addr}. Nothing proves who runs {root}, "
+                       f"so look it up before blocking the whole domain")
 
     if r["link_domains"]:
         actions.append("Block the link domains from the IOC file at the web proxy or DNS filter")
