@@ -282,7 +282,25 @@ Notes on the rules:
 | Function | What it does |
 |---|---|
 | `spoofed(auth)` | True only if a check actually failed. `none`/`missing` means no checks are set up, which is different |
-| `recommended_actions(r)` | LOW gets nothing. MEDIUM gets "hold for review, don't click". HIGH gets a block decision (fake address, scam domain, free webmail address, hacked authenticated account, spoofed real domain, or unverified domain) plus link blocking, mailbox search, and what to do if someone clicked, opened, or replied |
+| `recommended_actions(r)` | LOW gets nothing. MEDIUM gets "hold for review, don't click". HIGH gets a block decision (table below) plus link blocking, mailbox search, and what to do if someone clicked, opened, or replied |
+
+HIGH block decision, checked top to bottom, first match wins:
+
+| Situation | Advice |
+|---|---|
+| No address, or domain has no dot | Fake address, block by subject and links instead |
+| `scam_domain` (lookalike or risky TLD) | Block the whole sender domain |
+| Free webmail (gmail.com, ...) | Block only that one address, never the whole provider |
+| **Authenticated** (DMARC pass, or SPF + DKIM pass) | Block the address. The real account may be hacked, warn its owner |
+| **Spoofed** (a check actually failed) | Don't block the domain, the real owner's rules caught a fake. Block links instead |
+| **Unverified** (checks `none` or `missing`) | Block the address. Look up who runs the domain before blocking all of it |
+
+The last three are the "3 advice cases" for a normal-looking domain. Before 2026-10-27,
+`none`/`missing` was treated as spoofed, which could tell an analyst not to block a
+scammer's own domain.
+
+Follow-ups for HIGH: "if anyone clicked" (only when there are links), "if anyone opened
+the attachment" (only with attachments), "if anyone replied" (only when Reply-To is free webmail).
 
 **VirusTotal in report.py (only with `--vt`)**
 
@@ -395,6 +413,9 @@ Measured on 2026-10-27 with `python src/measure.py samples/phishing samples/legi
 | Precision | 100% | 100% |
 | Phishing HIGH / MEDIUM / LOW | 21 / 21 / 13 | 23 / 21 / 11 |
 
+Rules-only numbers were re-run after the rule 5 fix on 2026-10-27 and did not change.
+The `--vt` numbers were not re-run after that fix.
+
 **Be honest about this:**
 - 22 legit emails is a small set. 0 false positives on 22 does not prove the real false
   positive rate is 0.
@@ -428,6 +449,14 @@ History worth keeping for the README:
    rules. Never use real samples in tests.
 7. **Missing docstrings** in parser.py and some report.py functions (listed in section 6).
 8. **README is a placeholder.**
+9. **Brand names that are normal words ("ledger") can cause false positives.** Brand
+   checks match part of a word. Tested on made-up domains: `generalledger.example` is
+   called a Ledger lookalike (+3), marked `scam_domain`, and the advice says block the
+   whole domain. `pineapple.example` is called an Apple lookalike the same way. A sender
+   name like "Accounts Ledger Team" gets +3 from rule 5. Accounting or bookkeeping email
+   could hit this. Not seen in the 22 legit samples yet. Possible fix: match whole words
+   in names and subjects, and for lookalikes require the brand at the start or end of the
+   name, or next to a hyphen. Test on the bigger legit set before changing.
 
 ---
 
@@ -445,6 +474,21 @@ History worth keeping for the README:
 - Measured on 55 phishing + 22 legit (section 8)
 - Claude attribution removed from history and turned off for future commits
 - Rule 5 fixed so a subject brand can't hide a faked sender name, with tests
+
+**Work log** (dates from git commits)
+- 2026-10-24: VirusTotal connected with no dependencies. Lookalike domain detection
+  (`lookalike_brand`) was added in the same commit.
+- 2026-10-25: risky links and disguised attachments, ATT&CK tags, recommended actions,
+  IOC CSV export, weaker VT weight on DMARC-pass emails, `measure.py` and subfolder
+  scanning, measure results in the main scan
+- 2026-10-27:
+  - "Spoofed" now means a check actually failed. HIGH advice for normal domains split
+    into 3 cases, authenticated, spoofed, unverified (section 6)
+  - Crypto wallet brands added to `BRANDS` (Trust Wallet, Ledger, MetaMask, Coinbase)
+  - Measured 55 phishing + 22 legit (section 8)
+  - Claude attribution cleaned out of commit history and turned off
+  - Rule 5 fixed (old gap 5), `tests/` started with 2 tests for it
+  - Found the "ledger" false positive risk by testing made-up domains (gap 9)
 
 **Not done**
 - 50 legit emails (have 22)
